@@ -18,7 +18,7 @@ import SimpleITK as sitk
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
-from tk_rt_viewer.event_controllers.viewer_events import ViewerEventHandler
+from tk_rt_viewer.event_controllers.viewer_events import ZOOM_STEP, ViewerEventHandler
 from tk_rt_viewer.protocols import ViewerHost
 from tk_rt_viewer.rendering.view_axes import ImageViewAxes
 from tk_rt_viewer.state.viewer_state import SliceViewerState
@@ -365,7 +365,7 @@ class TestZoom:
             ScrollEvent(step=1, xdata=anchor[0], ydata=anchor[1], modifiers={"ctrl"})
         )
         axial.apply_aspect()
-        assert axial.zoom_factor() == pytest.approx(1.25)
+        assert axial.zoom_factor() == pytest.approx(ZOOM_STEP)
         assert x_fraction(axial, anchor[0]) == pytest.approx(frac)
         assert dict(state.indices) == before  # no slice scroll
         assert axial.yaxis_inverted()  # radiological orientation kept
@@ -390,7 +390,7 @@ class TestZoom:
         state, handler, axial, _coronal = self._setup()
         state.set_brush_tool_active(True)
         handler.on_scroll(ScrollEvent(step=1, xdata=8.0, ydata=4.0, modifiers={"ctrl"}))
-        assert axial.zoom_factor() == pytest.approx(1.25)
+        assert axial.zoom_factor() == pytest.approx(ZOOM_STEP)
 
     def test_a_resize_keeps_the_zoom_and_the_centre(self) -> None:
         _state, _handler, axial, _coronal = self._setup()

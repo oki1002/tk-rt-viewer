@@ -1,4 +1,4 @@
-"""view_axes.py — Axes for an image view: fills its cell, keeps 1:1, zooms.
+"""view_axes.py — Axes for an image view: fills its cell, keeps 1:1, zooms, pans.
 
 Matplotlib keeps an equal data aspect either by shrinking the Axes box
 (``adjustable="box"``, which leaves empty bands in the layout cell) or by
@@ -10,6 +10,9 @@ conformed to the box on every draw.
 Zoom is relative to the "fit" view, in which the whole slice just fits the
 box. It is read back from the limits, so a Matplotlib toolbar zoom or pan is
 picked up as well; after a resize the zoom factor and centre are kept.
+
+Panning (:meth:`ImageViewAxes.pan_to`) moves the view centre at a fixed zoom;
+like zooming, it never moves the view off the slice.
 """
 
 from matplotlib.axes import Axes
@@ -86,6 +89,25 @@ class ImageViewAxes(Axes):
             cx = anchor[0] + (cx - anchor[0]) * new_x / old_x
             cy = anchor[1] + (cy - anchor[1]) * new_y / old_y
         self._set_view(cx, cy, new_x, new_y)
+
+    def view_center(self) -> tuple[float, float]:
+        """Return the data coordinates of the centre of the current view."""
+        return self._center()
+
+    def pan_to(self, cx: float, cy: float) -> None:
+        """Centre the view on ``(cx, cy)`` without changing the zoom.
+
+        The centre is clamped so that the view stays on the slice; a view at
+        least as wide as the slice along an axis stays centred on it there.
+
+        Args:
+            cx: Target centre, x in data coordinates.
+            cy: Target centre, y in data coordinates.
+        """
+        span_x, span_y = self._spans()
+        if span_x <= 0 or span_y <= 0:
+            return
+        self._set_view(cx, cy, span_x, span_y)
 
     # ------------------------------------------------------------------
     # Internals

@@ -22,7 +22,7 @@ The distribution name on PyPI is `tk-rt-viewer`; the import package is
 - **Observer-pattern state management** — All view state lives in `SliceViewerState`; the widget reacts to changes without polling.
 - **SimpleITK-native coordinates** — Physical LPS coordinates, origin, spacing, and direction cosines are preserved throughout; axis reordering between SimpleITK and NumPy conventions is handled internally by the library.
 - **Interactive navigation** — Crosshair drag, mouse wheel (direction reversible), and keyboard (↑ / ↓ / PageUp / PageDown).
-- **Per-view zoom** — Ctrl + mouse wheel zooms the view under the pointer about the pointer; each view keeps its own zoom factor. The views fill their layout cells, so a zoomed slice uses the whole cell.
+- **Per-view zoom and pan** — Ctrl + mouse wheel zooms the view under the pointer about the pointer, and dragging with the middle button (the wheel pressed) pans it; each view keeps its own zoom factor and position. The views fill their layout cells, so a zoomed slice uses the whole cell.
 - **Independent window / level per image** — The primary and secondary images each carry their own display window, so a PET, MR, or dose overlay can be windowed without disturbing the CT underneath. The secondary follows the primary until an override is set. Right-click drag adjusts whichever image is targeted: horizontal → window width (WW), vertical → window centre (WL).
 - **RT-STRUCT support** — ROI masks stored in `StructureSet` (keyed by integer ROI number); contour overlay with optional semi-transparent fill; brush tool for mask editing.
 - **ROI operations** — Shape-based inter-slice interpolation, true Euclidean margins (uniform or 6-direction anisotropic), Gaussian smoothing, and boolean operations (union / intersection / subtraction).
@@ -97,7 +97,7 @@ tk_rt_viewer/
 │   ├── isodose.py              # IsoDoseOverlay (fill bands + contour lines)
 │   ├── dvh.py                  # DvhPanel (cumulative DVH panel)
 │   ├── layout.py               # LayoutManager (single / mpr / mpr_wide layouts)
-│   └── view_axes.py            # ImageViewAxes (fills its cell, 1:1 aspect, zoom)
+│   └── view_axes.py            # ImageViewAxes (fills its cell, 1:1 aspect, zoom, pan)
 ├── registration/
 │   ├── session.py              # RegistrationSession, cropping, resampling
 │   ├── params.py               # RigidParams <-> transforms (Vert/Lat/Long/...)
@@ -722,7 +722,7 @@ box tool, crosshair, contours, isodose) works unchanged in `"single"` mode
 against the `"axial"` key — host code does not need a separate code path
 for it.
 
-## Zoom and wheel direction
+## Zoom, pan and wheel direction
 
 Ctrl + mouse wheel zooms the view under the pointer, keeping the point under
 the pointer in place. Each view is zoomed independently, from 1× (the whole
@@ -731,11 +731,24 @@ the slice. A figure resize keeps each view's zoom and centre; loading a new
 primary image or switching the layout starts fitted again. Ctrl + wheel zooms
 even while the brush tool is active (the plain wheel still resizes the brush).
 
+Dragging with the middle button (the wheel pressed) pans the view under the
+pointer: the image follows the pointer, at any zoom, and the view cannot be
+moved off the slice. Each view pans independently, and panning also works
+while the brush tool is active. `reset_zoom()` fits the view again, which
+undoes the pan as well. A view keeps its position across a figure resize and
+starts fitted when a new primary image is loaded or the layout is switched.
+
 ```python
 viewer.set_zoom("axial", 2.5)                     # about the view centre
 viewer.set_zoom("coronal", 4.0, anchor=(x, z))    # keep (x, z) in place
 viewer.get_zoom("axial")                          # -> 2.5
-viewer.reset_zoom()                               # fit every view again
+viewer.reset_zoom()                               # fit every view again (and undo any pan)
+
+# Pan programmatically through the view's Axes
+ax = viewer.axs["axial"]
+ax.view_center()                                  # -> (x, y) in data coordinates
+ax.pan_to(x, y)                                   # centre on (x, y), clamped to the slice
+viewer.canvas.draw_idle()
 
 # Reverse the wheel for slice scrolling (brush size and zoom are unaffected)
 viewer = DicomViewer(parent, state=state, invert_scroll=True)

@@ -104,7 +104,7 @@ __all__ = [
     "StructureSet",
     "to_gy_pairs",
 ]
-__version__ = "2.3.3"
+__version__ = "2.3.4"
 
 
 def __getattr__(name: str) -> Any:

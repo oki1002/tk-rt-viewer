@@ -18,7 +18,7 @@ import SimpleITK as sitk
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
-from tk_rt_viewer.event_controllers.viewer_events import ViewerEventHandler
+from tk_rt_viewer.event_controllers.viewer_events import ZOOM_STEP, ViewerEventHandler
 from tk_rt_viewer.protocols import ViewerHost
 from tk_rt_viewer.rendering.view_axes import ImageViewAxes
 from tk_rt_viewer.state.viewer_state import SliceViewerState
@@ -365,7 +365,7 @@ class TestZoom:
             ScrollEvent(step=1, xdata=anchor[0], ydata=anchor[1], modifiers={"ctrl"})
         )
         axial.apply_aspect()
-        assert axial.zoom_factor() == pytest.approx(1.25)
+        assert axial.zoom_factor() == pytest.approx(ZOOM_STEP)
         assert x_fraction(axial, anchor[0]) == pytest.approx(frac)
         assert dict(state.indices) == before  # no slice scroll
         assert axial.yaxis_inverted()  # radiological orientation kept
@@ -390,7 +390,7 @@ class TestZoom:
         state, handler, axial, _coronal = self._setup()
         state.set_brush_tool_active(True)
         handler.on_scroll(ScrollEvent(step=1, xdata=8.0, ydata=4.0, modifiers={"ctrl"}))
-        assert axial.zoom_factor() == pytest.approx(1.25)
+        assert axial.zoom_factor() == pytest.approx(ZOOM_STEP)
 
     def test_a_resize_keeps_the_zoom_and_the_centre(self) -> None:
         _state, _handler, axial, _coronal = self._setup()
@@ -416,6 +416,154 @@ class TestZoom:
         axial.figure.set_size_inches(5, 5)
         axial.figure.canvas.draw()
         assert "aspect" not in caplog.text
+
+
+class TestPan:
+    def _setup(self, zoom: float = 3.0):
+        state = loaded_state((8, 16, 32))
+        axial = zoomable_axes(state, "axial")
+        handler, viewer = handler_for(state, FakeViewer({"axial": axial}))
+        handler.on_enter_axes(Event(inaxes=axial))
+        axial.zoom_to(zoom, anchor=(16.0, 8.0))
+        return state, handler, axial
+
+    @staticmethod
+    def _display_of(ax, point) -> np.ndarray:
+        return ax.transData.transform(point)
+
+    def test_the_image_follows_the_pointer(self) -> None:
+        _state, handler, axial = self._setup()
+        start = (200.0, 120.0)
+        grabbed = axial.transData.inverted().transform(start)
+        handler.on_press(Event(button=2, x=start[0], y=start[1]))
+        handler.on_motion(Event(button=2, x=start[0] + 15, y=start[1] + 9))
+        # The data point under the pointer at the press is still under it
+        assert self._display_of(axial, grabbed) == pytest.approx(
+            (start[0] + 15, start[1] + 9)
+        )
+        assert axial.zoom_factor() == pytest.approx(3.0)
+        assert axial.yaxis_inverted()  # radiological orientation kept
+
+    def test_the_drag_is_measured_from_the_press(self) -> None:
+        _state, handler, axial = self._setup()
+        handler.on_press(Event(button=2, x=200, y=120))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        handler.on_motion(Event(button=2, x=170, y=100))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        grabbed_after_a = axial.view_center()
+        handler.on_motion(Event(button=2, x=170, y=100))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        assert axial.view_center() == pytest.approx(grabbed_after_a)
+
+    def test_the_view_stays_on_the_slice(self) -> None:
+        state, handler, axial = self._setup()
+        x0, x1, y0, y1 = state.get_extent("axial")
+        handler.on_press(Event(button=2, x=200, y=120))
+        for dx, dy in [(10_000, 10_000), (-10_000, -10_000)]:
+            handler.on_motion(Event(button=2, x=200 + dx, y=120 + dy))
+            assert min(axial.get_xlim()) >= x0 - 1e-9
+            assert max(axial.get_xlim()) <= x1 + 1e-9
+            assert min(axial.get_ylim()) >= min(y0, y1) - 1e-9
+            assert max(axial.get_ylim()) <= max(y0, y1) + 1e-9
+
+    def test_a_fitted_view_does_not_move(self) -> None:
+        _state, handler, axial = self._setup(zoom=1.0)
+        before = [*axial.get_xlim(), *axial.get_ylim()]
+        handler.on_press(Event(button=2, x=200, y=120))
+        handler.on_motion(Event(button=2, x=260, y=60))
+        assert [*axial.get_xlim(), *axial.get_ylim()] == pytest.approx(before)
+
+    def test_release_ends_the_drag(self) -> None:
+        _state, handler, axial = self._setup()
+        handler.on_press(Event(button=2, x=200, y=120))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        handler.on_release(Event(button=2, x=215, y=129))
+        centre = axial.view_center()
+        handler.on_motion(Event(button=2, x=300, y=200))
+        assert axial.view_center() == centre
+
+    def test_a_lost_release_ends_the_drag(self) -> None:
+        _state, handler, axial = self._setup()
+        handler.on_press(Event(button=2, x=200, y=120))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        centre = axial.view_center()
+        handler.on_motion(Event(button=None, x=300, y=200))  # no button held
+        assert axial.view_center() == centre
+        handler.on_motion(Event(button=2, x=320, y=220))
+        assert axial.view_center() == centre
+
+    def test_pan_works_with_the_brush_active(self) -> None:
+        state, handler, axial = self._setup()
+        state.set_brush_tool_active(True)
+        centre = axial.view_center()
+        handler.on_press(Event(button=2, x=200, y=120))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        handler.on_release(Event(button=2, x=215, y=129))
+        assert axial.view_center() != centre
+        assert not handler.brush_handler.is_dragging
+
+    def test_other_buttons_do_not_pan(self) -> None:
+        state, handler, axial = self._setup()
+        centre = axial.view_center()
+        window_level = state.window_level
+        handler.on_press(Event(button=1, x=200, y=120))
+        handler.on_motion(Event(button=1, x=215, y=129))
+        handler.on_release(Event(button=1, x=215, y=129))
+        assert axial.view_center() == centre
+        assert state.window_level == window_level
+
+    def test_the_toolbar_owns_the_mouse(self) -> None:
+        _state, handler, axial = self._setup()
+        handler.viewer.toolbar_mode = "pan/zoom"
+        centre = axial.view_center()
+        handler.on_press(Event(button=2, x=200, y=120))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        assert axial.view_center() == centre
+
+    def test_a_press_outside_every_view_is_ignored(self) -> None:
+        _state, handler, axial = self._setup()
+        handler.on_leave_axes(Event(inaxes=None))
+        centre = axial.view_center()
+        handler.on_press(Event(button=2, x=200, y=120))
+        handler.on_motion(Event(button=2, x=215, y=129))
+        assert axial.view_center() == centre
+
+    def test_activating_the_brush_cancels_a_pan(self) -> None:
+        state, handler, axial = self._setup()
+        handler.on_press(Event(button=2, x=200, y=120))
+        state.set_brush_tool_active(True)
+        centre = axial.view_center()
+        handler.on_motion(Event(button=2, x=215, y=129))
+        assert axial.view_center() == centre
+
+
+class TestImageViewAxesPan:
+    def test_pan_to_moves_the_centre_and_keeps_the_zoom(self) -> None:
+        state = loaded_state((8, 16, 32))
+        axial = zoomable_axes(state, "axial")
+        axial.zoom_to(4.0)
+        axial.pan_to(5.0, 3.0)
+        assert axial.view_center() == pytest.approx((5.0, 3.0))
+        assert axial.zoom_factor() == pytest.approx(4.0)
+
+    def test_pan_to_is_clamped_to_the_slice(self) -> None:
+        state = loaded_state((8, 16, 32))
+        axial = zoomable_axes(state, "axial")
+        x0, x1, _y0, _y1 = state.get_extent("axial")
+        axial.zoom_to(4.0)
+        axial.pan_to(1e6, 1e6)
+        assert max(axial.get_xlim()) == pytest.approx(x1)
+        axial.pan_to(-1e6, -1e6)
+        assert min(axial.get_xlim()) == pytest.approx(x0)
+
+    def test_fitting_again_undoes_the_pan(self) -> None:
+        state = loaded_state((8, 16, 32))
+        axial = zoomable_axes(state, "axial")
+        fitted = axial.view_center()
+        axial.zoom_to(4.0)
+        axial.pan_to(5.0, 3.0)
+        axial.zoom_to(1.0)
+        assert axial.view_center() == pytest.approx(fitted)
 
 
 class TestKeyboardNavigation:

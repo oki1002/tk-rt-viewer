@@ -29,6 +29,11 @@ Zoom:
     each view independently (``set_zoom`` / ``get_zoom`` / ``reset_zoom``).
     The views fill their layout cells; a new image or layout starts fitted.
 
+Pan:
+    Dragging with the middle button (the wheel pressed) moves the view under
+    the pointer, each view independently and at any zoom, even while the brush
+    is active. The view cannot leave the slice; ``reset_zoom`` fits it again.
+
 Window / level:
     Right-click drag: horizontal -> width, vertical -> centre, applied to
     ``state.window_level_target``; Shift targets the other image for that
@@ -879,7 +884,10 @@ class DicomViewer(ttk.Frame):
             self.canvas.draw_idle()
 
     def reset_zoom(self, axis: str | None = None) -> None:
-        """Fit the whole slice into *axis*, or into every view when ``None``."""
+        """Fit the whole slice into *axis*, or into every view when ``None``.
+
+        This also undoes any pan: a fitted view is centred on the slice.
+        """
         for name in [axis] if axis is not None else list(self.axs):
             self.set_zoom(name, 1.0)
 

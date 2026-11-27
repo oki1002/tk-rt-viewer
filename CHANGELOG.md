@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.4]
+
+### Added
+
+- **Middle-button panning.** Pressing the middle mouse button (the wheel) over
+  a view and dragging moves the view so that the image follows the pointer.
+  Each view pans independently, at any zoom, and the view cannot be moved off
+  the slice. It works even while the brush tool is active, like Ctrl + wheel
+  zoom, and does not touch `SliceViewerState`. `reset_zoom()` fits the view
+  again, which also undoes the pan.
+- `ImageViewAxes.view_center()` returns the data coordinates of the view
+  centre, and `ImageViewAxes.pan_to(cx, cy)` centres the view on a point at
+  the current zoom (clamped to the slice).
+
 ## [2.3.3]
 
 ### Added

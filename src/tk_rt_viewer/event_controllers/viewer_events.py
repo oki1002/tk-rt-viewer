@@ -4,8 +4,10 @@ Responsibilities:
     - Track which view the pointer is inside.
     - Route canvas events to the appropriate sub-handler.
     - Implement right-click-drag window / level adjustment directly.
+    - Implement middle-button-drag panning directly.
 
 Event priority for ``on_press`` / ``on_motion``:
+    0. Pan (middle-button drag; works even while the brush is active)
     1. Brush tool (exclusive when active)
     2. Crosshair drag
     3. Window / level adjustment (right-click drag)
@@ -28,6 +30,13 @@ Wheel priority:
        the brush is active
     2. Brush tool: resize the brush
     3. Otherwise: scroll slices; ``invert_scroll`` flips the direction
+
+Pan:
+    Pressing the middle button (the wheel) over a view and dragging moves the
+    view so that the image follows the pointer. The drag is measured from the
+    press, so the image tracks the pointer exactly until the view reaches the
+    edge of the slice. Panning only changes the view limits; it does not
+    touch the state.
 """
 
 import numpy as np
@@ -42,7 +51,7 @@ from .brush_handler import BrushEventHandler
 from .crosshair_handler import CrosshairEventHandler
 
 #: Zoom ratio per Ctrl + wheel notch.
-ZOOM_STEP: float = 1.25
+ZOOM_STEP: float = 1.1
 
 #: Debounce window (ms) for batching scroll events; short enough to feel
 #: immediate, long enough to coalesce a wheel flick.
@@ -53,6 +62,9 @@ _KEY_STEPS: dict[str, int] = {"up": 1, "down": -1, "pageup": 10, "pagedown": -10
 
 # Right mouse button drives the window/level drag
 _WL_BUTTON: int = 3
+
+# Middle mouse button (wheel press) drives the pan drag
+_PAN_BUTTON: int = 2
 
 # Window/level drag sensitivity (display units per pixel) at the reference
 # width; scaled by the window at drag start so a 400 HU and a 4 Gy window
@@ -95,6 +107,13 @@ class ViewerEventHandler:
         self._wl_initial: tuple[float, float] | None = None
         self._wl_target: str = "primary"
 
+        # Pan drag state: the view being panned and the pointer position
+        # (display pixels) and view limits at the press. ``None`` when idle.
+        self._pan_axis: str = ""
+        self._pan_start: (
+            tuple[float, float, tuple[float, float], tuple[float, float]] | None
+        ) = None
+
         # Scroll debounce state (Tk main thread only)
         self._scroll_handle: str | None = None
         self._scroll_accum: int = 0
@@ -117,6 +136,7 @@ class ViewerEventHandler:
             self.brush_handler.activate()
             # The brush claims the mouse: abandon every other drag
             self._reset_wl_drag()
+            self._end_pan()
             self.crosshair_handler.cancel()
             self.bbox_handler.cancel()
             self.bbox_3d_handler.cancel()
@@ -256,6 +276,11 @@ class ViewerEventHandler:
         if self._any_drag_in_progress():
             self._recover_lost_drag(event)
 
+        # Priority 0: pan, even while the brush is active
+        if event.button == _PAN_BUTTON:
+            self._begin_pan(event)
+            return
+
         # Priority 1: brush tool (exclusive)
         if self.state.brush_tool_active:
             self.brush_handler.handle_press(event)
@@ -275,6 +300,53 @@ class ViewerEventHandler:
             if self.bbox_3d_handler.handle_press(event):
                 return
             self.bbox_handler.handle_press(event)
+
+    # ------------------------------------------------------------------
+    # Pan
+    # ------------------------------------------------------------------
+    def _begin_pan(self, event) -> None:
+        """Start panning the view under the pointer, if it can be panned."""
+        ax = self.viewer.axes_map.get(self._current_axis)
+        if (
+            not isinstance(ax, ImageViewAxes)
+            or self.state.primary_image is None
+            or event.x is None
+            or event.y is None
+        ):
+            return
+        self._pan_axis = self._current_axis
+        self._pan_start = (event.x, event.y, ax.get_xlim(), ax.get_ylim())
+
+    def _apply_pan(self, event) -> None:
+        """Move the view so the image follows the pointer since the press.
+
+        The shift is converted from display pixels to data units with the
+        limits at the press, so it keeps its sign on an inverted axis.
+        """
+        ax = self.viewer.axes_map.get(self._pan_axis)
+        if (
+            self._pan_start is None
+            or not isinstance(ax, ImageViewAxes)
+            or event.x is None
+            or event.y is None
+        ):
+            return
+        width, height = ax.bbox.width, ax.bbox.height
+        if width <= 0 or height <= 0:
+            return
+        start_x, start_y, xlim, ylim = self._pan_start
+        shift_x = (event.x - start_x) / width * (xlim[1] - xlim[0])
+        shift_y = (event.y - start_y) / height * (ylim[1] - ylim[0])
+        ax.pan_to(
+            (xlim[0] + xlim[1]) / 2 - shift_x,
+            (ylim[0] + ylim[1]) / 2 - shift_y,
+        )
+        self.viewer.refresh_canvas()
+
+    def _end_pan(self) -> None:
+        """Clear all pan drag state."""
+        self._pan_axis = ""
+        self._pan_start = None
 
     def _begin_wl_drag(self, event) -> None:
         """Start a window/level drag, resolving its target image once.
@@ -311,6 +383,9 @@ class ViewerEventHandler:
             self._recover_lost_drag(event)
             return
 
+        if self._pan_start is not None:
+            self._apply_pan(event)
+            return
         if self.state.brush_tool_active:
             self.brush_handler.handle_motion(event)
             return
@@ -341,11 +416,12 @@ class ViewerEventHandler:
         return event.button is None
 
     def _any_drag_in_progress(self) -> bool:
-        """``True`` if any sub-handler (or the W/L drag) is mid-drag."""
+        """``True`` if any sub-handler (or the W/L or pan drag) is mid-drag."""
         return (
             self.brush_handler.is_dragging
             or self.crosshair_handler.is_dragging
             or self._dragging_wl
+            or self._pan_start is not None
             or self.bbox_handler.is_dragging
             or self.bbox_3d_handler.is_dragging
         )
@@ -366,6 +442,8 @@ class ViewerEventHandler:
             self.bbox_3d_handler.cancel()
         if self._dragging_wl:
             self._reset_wl_drag()
+        if self._pan_start is not None:
+            self._end_pan()
 
     def _apply_wl_drag(self, event) -> None:
         """Translate a right-drag into a window/level change.
@@ -395,6 +473,10 @@ class ViewerEventHandler:
     # ------------------------------------------------------------------
     def on_release(self, event) -> None:
         """Release all in-progress drag operations."""
+        if event.button == _PAN_BUTTON and self._pan_start is not None:
+            self._end_pan()
+            return
+
         if self.state.brush_tool_active:
             self.brush_handler.handle_release(event)
             return
